@@ -10,34 +10,31 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# रैंडम User-Agents
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
-]
-
-# ----------------- डमी वेब सर्वर (Render Web Service के लिए) ----------------- #
+# ----------------- Render Dummy Server ----------------- #
 class DummyServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"Telegram View Bot is Running 24/7 on Render Web Service!")
+        self.wfile.write(b"Telegram View Bot Active 24/7")
 
     def log_message(self, format, *args):
-        # डमी सर्वर के फालतू लॉग्स को कंसोल में आने से रोकना
         return
 
 def run_http_server():
     port = int(os.getenv("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), DummyServer)
-    print(f"[*] Render Dummy HTTP Server listening on port {port}")
+    print(f"[*] Server running on port {port}")
     server.serve_forever()
 
-# ----------------- टेलीग्राम व्यू बॉट लॉजिक ----------------- #
+# ----------------- View Booster Logic ----------------- #
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
+]
+
 def format_proxy(proxy_raw):
     p = proxy_raw.strip()
     if not p:
@@ -52,12 +49,6 @@ def process_view(channel, post, proxy_raw):
         return False
 
     ua = random.choice(USER_AGENTS)
-    headers = {
-        'User-Agent': ua,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5'
-    }
-
     session = requests.Session()
     session.proxies.update(proxy_dict)
     
@@ -68,27 +59,53 @@ def process_view(channel, post, proxy_raw):
 
     try:
         embed_url = f"https://t.me/{channel}/{post}?embed=1"
-        res = session.get(embed_url, headers=headers, timeout=10)
+        
+        # 1. पूरा ब्राउज़र हेडर सिमुलेशन
+        headers = {
+            'User-Agent': ua,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Sec-Ch-Ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'iframe',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'cross-site',
+            'Upgrade-Insecure-Requests': '1'
+        }
+
+        res = session.get(embed_url, headers=headers, timeout=12)
         if res.status_code != 200:
             return False
 
+        # Session Cookie और Token एक्सट्रेक्ट करना
         match = re.search(r'data-view="([^"]+)"', res.text)
         if not match:
             return False
         
         view_token = match.group(1)
 
+        # 2. AJAX View Call (टेलीग्राम फ्रंटएंड जैसा)
         ajax_headers = {
             'User-Agent': ua,
             'X-Requested-With': 'XMLHttpRequest',
             'Referer': embed_url,
-            'Accept': '*/*'
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'Sec-Ch-Ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin'
         }
         
-        view_url = f"https://t.me/{channel}/{post}?embed=1&view={view_token}"
-        view_res = session.get(view_url, headers=ajax_headers, timeout=10)
+        # छोटा सा मानवीय विलंब (Natural Human Delay)
+        time.sleep(random.uniform(0.5, 1.2))
         
-        if view_res.status_code == 200:
+        view_url = f"https://t.me/{channel}/{post}?embed=1&view={view_token}"
+        view_res = session.get(view_url, headers=ajax_headers, timeout=12)
+        
+        if view_res.status_code == 200 and ("true" in view_res.text.lower() or "ok" in view_res.text.lower() or view_res.text == ""):
             return True
         return False
     except Exception:
@@ -97,14 +114,14 @@ def process_view(channel, post, proxy_raw):
         session.close()
 
 def send_views_to_post(channel, post_id, proxies, max_workers=10):
-    print(f"\n[+] नई पोस्ट डिटेक्ट हुई -> ID: {post_id} | व्यूज भेजना शुरू...")
+    print(f"\n[+] नई पोस्ट मिली -> ID: {post_id} | व्यूज प्रोसेस शुरू...")
     success_count = 0
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(process_view, channel, post_id, proxy) for proxy in proxies]
         for f in futures:
             if f.result():
                 success_count += 1
-    print(f"[✓] पोस्ट {post_id} पर {success_count}/{len(proxies)} सफल व्यूज भेजे गए।")
+    print(f"[✓] पोस्ट {post_id} पर {success_count}/{len(proxies)} व्यूज सफलतापूर्वक भेजे गए।")
 
 def get_latest_post_id(channel):
     url = f"https://t.me/s/{channel}"
@@ -118,10 +135,9 @@ def get_latest_post_id(channel):
                 last_post = posts[-1]
                 data_post = last_post.get('data-post')
                 if data_post:
-                    post_id = int(data_post.split('/')[-1])
-                    return post_id
+                    return int(data_post.split('/')[-1])
     except Exception as e:
-        print(f"[!] पोस्ट चेक करने में एरर: {e}")
+        print(f"[!] पोस्ट फेच एरर: {e}")
     return None
 
 def load_proxies():
@@ -136,23 +152,20 @@ def main():
     check_interval = int(os.getenv("CHECK_INTERVAL", 15))
 
     if not channel:
-        print("[ERROR] CHANNEL_NAME सेट नहीं किया गया है!")
+        print("[ERROR] CHANNEL_NAME मौजूद नहीं है!")
         return
 
     proxies = load_proxies()
     if not proxies:
-        print("[ERROR] proxies.txt में कोई प्रॉक्सी नहीं मिली!")
+        print("[ERROR] proxies.txt खाली है!")
         return
 
     print(f"[*] चैनल मॉनिटरिंग चालू: @{channel}")
-    print(f"[*] लोड की गई प्रॉक्सी: {len(proxies)} | थ्रेड्स: {max_workers}")
-    print(f"[*] हर {check_interval} सेकंड में नई पोस्ट चेक की जाएगी...\n")
+    print(f"[*] एक्टिव प्रॉक्सी: {len(proxies)} | थ्रेड्स: {max_workers}\n")
 
     last_known_post_id = get_latest_post_id(channel)
     if last_known_post_id:
-        print(f"[*] वर्तमान नवीनतम पोस्ट ID: {last_known_post_id}")
-    else:
-        print("[!] चैनल का प्रारंभिक डेटा प्राप्त नहीं हो सका, पुनः प्रयास जारी रहेगा...")
+        print(f"[*] वर्तमान पोस्ट ID: {last_known_post_id}")
 
     while True:
         try:
@@ -167,16 +180,10 @@ def main():
             
             time.sleep(check_interval)
         except KeyboardInterrupt:
-            print("\n[!] मॉनिटरिंग बंद की गई।")
             break
-        except Exception as e:
-            print(f"[!] लूप एरर: {e}")
+        except Exception:
             time.sleep(5)
 
 if __name__ == "__main__":
-    # Render Web Service के पोर्ट बाइंडिंग के लिए डमी सर्वर थ्रेड
-    server_thread = threading.Thread(target=run_http_server, daemon=True)
-    server_thread.start()
-    
-    # मुख्य बॉट लूप
+    threading.Thread(target=run_http_server, daemon=True).start()
     main()
