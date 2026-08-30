@@ -3,12 +3,11 @@ import re
 import time
 import random
 import threading
+import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from concurrent.futures import ThreadPoolExecutor
 import requests
 from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from playwright.async_api import async_playwright
 
 # ----------------- Render Web Service Dummy Server ----------------- #
 class DummyServer(BaseHTTPRequestHandler):
@@ -16,7 +15,7 @@ class DummyServer(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"Auto-Scraper Telegram View Bot is Running 24/7!")
+        self.wfile.write(b"Playwright Telegram View Bot Running 24/7!")
 
     def log_message(self, format, *args):
         return
@@ -24,10 +23,10 @@ class DummyServer(BaseHTTPRequestHandler):
 def run_http_server():
     port = int(os.getenv("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), DummyServer)
-    print(f"[*] Render Dummy HTTP Server live on port {port}")
+    print(f"[*] Dummy HTTP Server live on port {port}")
     server.serve_forever()
 
-# ----------------- प्रॉक्सी स्क्रैपर लॉजिक ----------------- #
+# ----------------- प्रॉक्सी स्क्रैपर ----------------- #
 PROXIES_POOL = []
 PROXIES_LOCK = threading.Lock()
 
@@ -36,21 +35,18 @@ PROXIES_SOURCES = [
     "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
     "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
     "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
-    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all"
 ]
 
 def scrape_fresh_proxies():
     global PROXIES_POOL
     while True:
-        print("\n[*] [SCRAPER] इंटरनेट से ताज़ा (Fresh) प्रॉक्सी स्क्रैप की जा रही हैं...")
         new_proxies = set()
         for url in PROXIES_SOURCES:
             try:
                 res = requests.get(url, timeout=10)
                 if res.status_code == 200:
-                    lines = res.text.splitlines()
-                    for line in lines:
+                    for line in res.text.splitlines():
                         p = line.strip()
                         if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}$", p):
                             new_proxies.add(p)
@@ -59,119 +55,89 @@ def scrape_fresh_proxies():
 
         with PROXIES_LOCK:
             if new_proxies:
-                # रैंडम 300 ताज़ा प्रॉक्सी का एक्टिव पूल बनाना
-                sample_size = min(len(new_proxies), 300)
+                sample_size = min(len(new_proxies), 100)
                 PROXIES_POOL = random.sample(list(new_proxies), sample_size)
-                print(f"[✓] [SCRAPER] सफलतापूर्वक {len(PROXIES_POOL)} ताज़ा प्रॉक्सी लोड की गईं!")
-            else:
-                print("[!] [SCRAPER] नई प्रॉक्सी नहीं मिलीं, पुराना पूल सक्रिय रहेगा।")
+                print(f"[✓] [SCRAPER] {len(PROXIES_POOL)} ताज़ा प्रॉक्सी लोड हुईं।")
 
-        # हर 5 मिनट (300 सेकंड) में दोबारा ऑटो-स्क्रैप करना
         time.sleep(300)
 
-# ----------------- टेलीग्राम व्यू बॉट लॉजिक ----------------- #
+# ----------------- Playwright Headless Browser Worker ----------------- #
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
 ]
 
-def format_proxy(proxy_raw):
-    p = proxy_raw.strip()
-    if not p:
-        return None
-    if not (p.startswith("http://") or p.startswith("https://") or p.startswith("socks4://") or p.startswith("socks5://")):
-        p = f"http://{p}"
-    return {'http': p, 'https': p}
+async def open_view_in_browser(playwright, channel, post_id, proxy=None):
+    proxy_settings = None
+    if proxy:
+        proxy_settings = {"server": f"http://{proxy}"}
 
-def process_view(channel, post, proxy_raw):
-    proxy_dict = format_proxy(proxy_raw)
-    if not proxy_dict:
-        return False
-
-    ua = random.choice(USER_AGENTS)
-    session = requests.Session()
-    session.proxies.update(proxy_dict)
-    
-    retries = Retry(total=1, backoff_factor=0.1, status_forcelist=[500, 502, 503, 504])
-    adapter = HTTPAdapter(max_retries=retries)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-
+    browser = None
     try:
-        embed_url = f"https://t.me/{channel}/{post}?embed=1"
-        
-        headers = {
-            'User-Agent': ua,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Sec-Ch-Ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'iframe',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'cross-site',
-            'Upgrade-Insecure-Requests': '1'
-        }
+        browser = await playwright.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-zygote",
+                "--single-process"
+            ]
+        )
+        context = await browser.new_context(
+            user_agent=random.choice(USER_AGENTS),
+            viewport={"width": 1280, "height": 720},
+            proxy=proxy_settings
+        )
+        page = await context.new_page()
 
-        res = session.get(embed_url, headers=headers, timeout=8)
-        if res.status_code != 200:
-            return False
-
-        match = re.search(r'data-view="([^"]+)"', res.text)
-        if not match:
-            return False
+        # टेलीग्राम एम्बेड पेज लोड करना
+        url = f"https://t.me/{channel}/{post_id}?embed=1"
+        await page.goto(url, timeout=20000, wait_until="networkidle")
         
-        view_token = match.group(1)
-
-        ajax_headers = {
-            'User-Agent': ua,
-            'X-Requested-With': 'XMLHttpRequest',
-            'Referer': embed_url,
-            'Accept': 'application/json, text/javascript, */*; q=0.01',
-            'Sec-Ch-Ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-origin'
-        }
+        # JS एक्जीक्यूट और व्यू ट्रिगर होने के लिए 2-3 सेकंड का स्वाभाविक ठहराव
+        await asyncio.sleep(random.uniform(2.0, 3.5))
         
-        time.sleep(random.uniform(0.3, 0.8))
-        view_url = f"https://t.me/{channel}/{post}?embed=1&view={view_token}"
-        view_res = session.get(view_url, headers=ajax_headers, timeout=8)
-        
-        if view_res.status_code == 200 and ("true" in view_res.text.lower() or "ok" in view_res.text.lower() or view_res.text == ""):
-            return True
-        return False
+        await context.close()
+        await browser.close()
+        return True
     except Exception:
+        if browser:
+            await browser.close()
         return False
-    finally:
-        session.close()
 
-def send_views_to_post(channel, post_id, max_workers=50):
+async def boost_views_playwright(channel, post_id, max_concurrency=10):
     with PROXIES_LOCK:
-        active_proxies = list(PROXIES_POOL)
+        proxies = list(PROXIES_POOL)
     
-    if not active_proxies:
-        print("[!] कोई सक्रिय प्रॉक्सी उपलब्ध नहीं है!")
-        return
+    if not proxies:
+        proxies = [None] * 5
 
-    print(f"\n[+] नई पोस्ट मिली -> ID: {post_id} | {len(active_proxies)} फ्रेश प्रॉक्सी से व्यूज भेजे जा रहे हैं...")
+    print(f"\n[+] नई पोस्ट डिटेक्ट हुई -> ID: {post_id} | Playwright से असली JS रेंडरिंग शुरू...")
+    
     success_count = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(process_view, channel, post_id, proxy) for proxy in active_proxies]
-        for f in futures:
-            if f.result():
-                success_count += 1
-    print(f"[✓] पोस्ट {post_id} पर {success_count}/{len(active_proxies)} सफल व्यूज भेजे गए।\n")
+    async with async_playwright() as playwright:
+        sem = asyncio.Semaphore(max_concurrency)
+
+        async def worker(proxy):
+            nonlocal success_count
+            async with sem:
+                res = await open_view_in_browser(playwright, channel, post_id, proxy)
+                if res:
+                    success_count += 1
+
+        tasks = [worker(p) for p in proxies[:40]] # 40 ब्राउज़र कॉल्स
+        await asyncio.gather(*tasks)
+
+    print(f"[✓] पोस्ट {post_id} पर {success_count}/{min(len(proxies), 40)} सफल ब्राउज़र व्यूज रेंडर हुए!\n")
 
 def get_latest_post_id(channel):
     url = f"https://t.me/s/{channel}"
-    headers = {"User-Agent": random.choice(USER_AGENTS)}
     try:
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get(url, headers={"User-Agent": random.choice(USER_AGENTS)}, timeout=10)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             posts = soup.find_all('div', class_='tgme_widget_message')
@@ -180,27 +146,22 @@ def get_latest_post_id(channel):
                 data_post = last_post.get('data-post')
                 if data_post:
                     return int(data_post.split('/')[-1])
-    except Exception as e:
-        print(f"[!] पोस्ट फेच एरर: {e}")
+    except Exception:
+        pass
     return None
 
-def main():
+async def main():
     channel = os.getenv("CHANNEL_NAME", "").replace('@', '').replace('https://t.me/', '').replace('https://t.me/s/', '')
-    max_workers = int(os.getenv("THREADS", 50))
     check_interval = int(os.getenv("CHECK_INTERVAL", 15))
 
     if not channel:
         print("[ERROR] CHANNEL_NAME मौजूद नहीं है!")
         return
 
-    # 5 मिनट वाला ऑटो-स्क्रैपर थ्रेड शुरू करना
-    scraper_thread = threading.Thread(target=scrape_fresh_proxies, daemon=True)
-    scraper_thread.start()
+    threading.Thread(target=scrape_fresh_proxies, daemon=True).start()
+    await asyncio.sleep(5)
 
-    print("[*] प्रारंभिक प्रॉक्सी पूल तैयार होने का इंतज़ार...")
-    time.sleep(6)
-
-    print(f"[*] चैनल मॉनिटरिंग चालू: @{channel}")
+    print(f"[*] Playwright इंजन चालू: @{channel}")
     print(f"[*] हर {check_interval} सेकंड में नई पोस्ट चेक की जाएगी...\n")
 
     last_known_post_id = get_latest_post_id(channel)
@@ -215,15 +176,15 @@ def main():
                     last_known_post_id = current_latest_id
                 elif current_latest_id > last_known_post_id:
                     for new_id in range(last_known_post_id + 1, current_latest_id + 1):
-                        send_views_to_post(channel, new_id, max_workers)
+                        await boost_views_playwright(channel, new_id, max_concurrency=5)
                     last_known_post_id = current_latest_id
             
-            time.sleep(check_interval)
+            await asyncio.sleep(check_interval)
         except KeyboardInterrupt:
             break
         except Exception:
-            time.sleep(5)
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     threading.Thread(target=run_http_server, daemon=True).start()
-    main()
+    asyncio.run(main())
