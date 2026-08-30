@@ -2,13 +2,15 @@ import os
 import re
 import time
 import random
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from concurrent.futures import ThreadPoolExecutor
 import requests
 from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# à¤°à¥ˆà¤‚à¤¡à¤® User-Agents
+# रैंडम User-Agents
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -17,8 +19,26 @@ USER_AGENTS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
 ]
 
+# ----------------- डमी वेब सर्वर (Render Web Service के लिए) ----------------- #
+class DummyServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"Telegram View Bot is Running 24/7 on Render Web Service!")
+
+    def log_message(self, format, *args):
+        # डमी सर्वर के फालतू लॉग्स को कंसोल में आने से रोकना
+        return
+
+def run_http_server():
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), DummyServer)
+    print(f"[*] Render Dummy HTTP Server listening on port {port}")
+    server.serve_forever()
+
+# ----------------- टेलीग्राम व्यू बॉट लॉजिक ----------------- #
 def format_proxy(proxy_raw):
-    """à¤ªà¥à¤°à¥‰à¤•à¥à¤¸à¥€ à¤¸à¥à¤Ÿà¥à¤°à¤¿à¤‚à¤— à¤•à¥‹ à¤¸à¤¹à¥€ URL à¤«à¥‰à¤°à¥à¤®à¥‡à¤Ÿ à¤®à¥‡à¤‚ à¤¤à¥ˆà¤¯à¤¾à¤° à¤•à¤°à¤¤à¤¾ à¤¹à¥ˆ"""
     p = proxy_raw.strip()
     if not p:
         return None
@@ -27,7 +47,6 @@ def format_proxy(proxy_raw):
     return {'http': p, 'https': p}
 
 def process_view(channel, post, proxy_raw):
-    """à¤ªà¥à¤°à¤¤à¥à¤¯à¥‡à¤• à¤ªà¥à¤°à¥‰à¤•à¥à¤¸à¥€ à¤•à¥‡ à¤²à¤¿à¤ à¤¸à¥‡à¤¶à¤¨ à¤¬à¤¨à¤¾à¤•à¤° à¤µà¥à¤¯à¥‚ à¤°à¤¿à¤•à¥à¤µà¥‡à¤¸à¥à¤Ÿ à¤­à¥‡à¤œà¤¤à¤¾ à¤¹à¥ˆ"""
     proxy_dict = format_proxy(proxy_raw)
     if not proxy_dict:
         return False
@@ -77,40 +96,35 @@ def process_view(channel, post, proxy_raw):
     finally:
         session.close()
 
-def send_views_to_post(channel, post_id, proxies, max_workers=50):
-    """à¤¦à¤¿à¤ à¤—à¤ à¤ªà¥‹à¤¸à¥à¤Ÿ ID à¤ªà¤° à¤¸à¤­à¥€ à¤ªà¥à¤°à¥‰à¤•à¥à¤¸à¥€à¤œ à¤¸à¥‡ à¤µà¥à¤¯à¥‚à¤œ à¤­à¥‡à¤œà¤¤à¤¾ à¤¹à¥ˆ"""
-    print(f"\n[+] à¤¨à¤ˆ à¤ªà¥‹à¤¸à¥à¤Ÿ à¤®à¤¿à¤²à¥€ -> ID: {post_id} | à¤µà¥à¤¯à¥‚à¤œ à¤­à¥‡à¤œà¤¨à¤¾ à¤¶à¥à¤°à¥‚ à¤¹à¥‹ à¤°à¤¹à¤¾ à¤¹à¥ˆ...")
+def send_views_to_post(channel, post_id, proxies, max_workers=10):
+    print(f"\n[+] नई पोस्ट डिटेक्ट हुई -> ID: {post_id} | व्यूज भेजना शुरू...")
     success_count = 0
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(process_view, channel, post_id, proxy) for proxy in proxies]
         for f in futures:
             if f.result():
                 success_count += 1
-    print(f"[âœ“] à¤ªà¥‹à¤¸à¥à¤Ÿ {post_id} à¤ªà¤° {success_count}/{len(proxies)} à¤¸à¤«à¤² à¤µà¥à¤¯à¥‚à¤œ à¤­à¥‡à¤œà¥‡ à¤—à¤à¥¤")
+    print(f"[✓] पोस्ट {post_id} पर {success_count}/{len(proxies)} सफल व्यूज भेजे गए।")
 
 def get_latest_post_id(channel):
-    """à¤šà¥ˆà¤¨à¤² à¤•à¥‡ à¤µà¥‡à¤¬ à¤ªà¥à¤°à¥€à¤µà¥à¤¯à¥‚ à¤ªà¥‡à¤œ à¤¸à¥‡ à¤¨à¤µà¥€à¤¨à¤¤à¤® à¤ªà¥‹à¤¸à¥à¤Ÿ ID à¤¨à¤¿à¤•à¤¾à¤²à¤¤à¤¾ à¤¹à¥ˆ"""
     url = f"https://t.me/s/{channel}"
     headers = {"User-Agent": random.choice(USER_AGENTS)}
     try:
         res = requests.get(url, headers=headers, timeout=10)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
-            # à¤Ÿà¥‡à¤²à¥€à¤—à¥à¤°à¤¾à¤® à¤µà¥‡à¤¬ à¤ªà¥‡à¤œ à¤ªà¤° à¤¹à¤° à¤ªà¥‹à¤¸à¥à¤Ÿ à¤•à¤¾ à¤Ÿà¥ˆà¤— tgme_widget_message à¤¹à¥‹à¤¤à¤¾ à¤¹à¥ˆ
             posts = soup.find_all('div', class_='tgme_widget_message')
             if posts:
-                # à¤¸à¤¬à¤¸à¥‡ à¤†à¤–à¤¿à¤°à¥€ à¤ªà¥‹à¤¸à¥à¤Ÿ à¤¸à¥‡ ID à¤¨à¤¿à¤•à¤¾à¤²à¤¨à¤¾ (format: channel/1234)
                 last_post = posts[-1]
                 data_post = last_post.get('data-post')
                 if data_post:
                     post_id = int(data_post.split('/')[-1])
                     return post_id
     except Exception as e:
-        print(f"[!] à¤ªà¥‹à¤¸à¥à¤Ÿ à¤šà¥‡à¤• à¤•à¤°à¤¨à¥‡ à¤®à¥‡à¤‚ à¤à¤°à¤°: {e}")
+        print(f"[!] पोस्ट चेक करने में एरर: {e}")
     return None
 
 def load_proxies():
-    """proxies.txt à¤¸à¥‡ à¤ªà¥à¤°à¥‰à¤•à¥à¤¸à¥€ à¤²à¥‹à¤¡ à¤•à¤°à¤¤à¤¾ à¤¹à¥ˆ"""
     if not os.path.exists('proxies.txt'):
         return []
     with open('proxies.txt', 'r', encoding='utf-8', errors='ignore') as f:
@@ -118,28 +132,27 @@ def load_proxies():
 
 def main():
     channel = os.getenv("CHANNEL_NAME", "").replace('@', '').replace('https://t.me/', '').replace('https://t.me/s/', '')
-    max_workers = int(os.getenv("THREADS", 50))
-    check_interval = int(os.getenv("CHECK_INTERVAL", 15)) # à¤¹à¤° à¤•à¤¿à¤¤à¤¨à¥‡ à¤¸à¥‡à¤•à¤‚à¤¡ à¤®à¥‡à¤‚ à¤šà¥‡à¤• à¤•à¤°à¥‡
+    max_workers = int(os.getenv("THREADS", 10))
+    check_interval = int(os.getenv("CHECK_INTERVAL", 15))
 
     if not channel:
-        print("[ERROR] CHANNEL_NAME à¤¸à¥‡à¤Ÿ à¤¨à¤¹à¥€à¤‚ à¤•à¤¿à¤¯à¤¾ à¤—à¤¯à¤¾ à¤¹à¥ˆ!")
+        print("[ERROR] CHANNEL_NAME सेट नहीं किया गया है!")
         return
 
     proxies = load_proxies()
     if not proxies:
-        print("[ERROR] proxies.txt à¤®à¥‡à¤‚ à¤•à¥‹à¤ˆ à¤ªà¥à¤°à¥‰à¤•à¥à¤¸à¥€ à¤¨à¤¹à¥€à¤‚ à¤®à¤¿à¤²à¥€!")
+        print("[ERROR] proxies.txt में कोई प्रॉक्सी नहीं मिली!")
         return
 
-    print(f"[*] à¤šà¥ˆà¤¨à¤² à¤®à¥‰à¤¨à¤¿à¤Ÿà¤°à¤¿à¤‚à¤— à¤šà¤¾à¤²à¥‚: @{channel}")
-    print(f"[*] à¤²à¥‹à¤¡ à¤•à¥€ à¤—à¤ˆ à¤ªà¥à¤°à¥‰à¤•à¥à¤¸à¥€: {len(proxies)} | à¤¥à¥à¤°à¥‡à¤¡à¥à¤¸: {max_workers}")
-    print(f"[*] à¤¹à¤° {check_interval} à¤¸à¥‡à¤•à¤‚à¤¡ à¤®à¥‡à¤‚ à¤¨à¤ˆ à¤ªà¥‹à¤¸à¥à¤Ÿ à¤šà¥‡à¤• à¤•à¥€ à¤œà¤¾à¤à¤—à¥€...\n")
+    print(f"[*] चैनल मॉनिटरिंग चालू: @{channel}")
+    print(f"[*] लोड की गई प्रॉक्सी: {len(proxies)} | थ्रेड्स: {max_workers}")
+    print(f"[*] हर {check_interval} सेकंड में नई पोस्ट चेक की जाएगी...\n")
 
-    # à¤¶à¥à¤°à¥à¤†à¤¤à¥€ à¤²à¥‡à¤Ÿà¥‡à¤¸à¥à¤Ÿ à¤ªà¥‹à¤¸à¥à¤Ÿ ID à¤ªà¥à¤°à¤¾à¤ªà¥à¤¤ à¤•à¤°à¤¨à¤¾
     last_known_post_id = get_latest_post_id(channel)
     if last_known_post_id:
-        print(f"[*] à¤µà¤°à¥à¤¤à¤®à¤¾à¤¨ à¤¨à¤µà¥€à¤¨à¤¤à¤® à¤ªà¥‹à¤¸à¥à¤Ÿ ID: {last_known_post_id}")
+        print(f"[*] वर्तमान नवीनतम पोस्ट ID: {last_known_post_id}")
     else:
-        print("[!] à¤šà¥ˆà¤¨à¤² à¤•à¤¾ à¤ªà¥à¤°à¤¾à¤°à¤‚à¤­à¤¿à¤• à¤¡à¥‡à¤Ÿà¤¾ à¤ªà¥à¤°à¤¾à¤ªà¥à¤¤ à¤¨à¤¹à¥€à¤‚ à¤¹à¥‹ à¤¸à¤•à¤¾, à¤ªà¥à¤¨à¤ƒ à¤ªà¥à¤°à¤¯à¤¾à¤¸ à¤œà¤¾à¤°à¥€ à¤°à¤¹à¥‡à¤—à¤¾...")
+        print("[!] चैनल का प्रारंभिक डेटा प्राप्त नहीं हो सका, पुनः प्रयास जारी रहेगा...")
 
     while True:
         try:
@@ -148,18 +161,22 @@ def main():
                 if last_known_post_id is None:
                     last_known_post_id = current_latest_id
                 elif current_latest_id > last_known_post_id:
-                    # à¤¯à¤¦à¤¿ à¤à¤• à¤¸à¥‡ à¤…à¤§à¤¿à¤• à¤ªà¥‹à¤¸à¥à¤Ÿ à¤† à¤—à¤ˆ à¤¹à¥‹à¤‚ à¤¤à¥‹ à¤•à¥à¤°à¤®à¤µà¤¾à¤° à¤¸à¤­à¥€ à¤ªà¤° à¤µà¥à¤¯à¥‚à¤œ à¤­à¥‡à¤œà¤¨à¤¾
                     for new_id in range(last_known_post_id + 1, current_latest_id + 1):
                         send_views_to_post(channel, new_id, proxies, max_workers)
                     last_known_post_id = current_latest_id
             
             time.sleep(check_interval)
         except KeyboardInterrupt:
-            print("\n[!] à¤®à¥‰à¤¨à¤¿à¤Ÿà¤°à¤¿à¤‚à¤— à¤¬à¤‚à¤¦ à¤•à¥€ à¤—à¤ˆà¥¤")
+            print("\n[!] मॉनिटरिंग बंद की गई।")
             break
         except Exception as e:
-            print(f"[!] à¤²à¥‚à¤ª à¤à¤°à¤°: {e}")
+            print(f"[!] लूप एरर: {e}")
             time.sleep(5)
 
 if __name__ == "__main__":
+    # Render Web Service के पोर्ट बाइंडिंग के लिए डमी सर्वर थ्रेड
+    server_thread = threading.Thread(target=run_http_server, daemon=True)
+    server_thread.start()
+    
+    # मुख्य बॉट लूप
     main()
